@@ -1,0 +1,10 @@
+{
+  "dotSize": 12,
+  "padding": [6, 10],
+  "margin": 24,
+  "position": "top-right",
+  "font": "600 11pt sans-serif",
+  "pulseScale": 1.06,
+  "listeningPeriod": 700,
+  "thinkingPeriod": 1100
+}
