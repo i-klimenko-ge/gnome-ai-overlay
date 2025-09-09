@@ -62,6 +62,7 @@ class Overlay {
 
   _build() {
     this._box = new St.BoxLayout({ style_class: 'ai-overlay', reactive: false });
+    this._box.set_pivot_point(0.5, 0.5);
     this._dot = new St.Widget({ style_class: 'ai-dot', width: 12, height: 12, reactive: false });
     this._label = new St.Label({ text: '', style_class: 'ai-label', reactive: false });
     this._box.add_child(this._dot); this._box.add_child(this._label);
