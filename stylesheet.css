@@ -1,0 +1,7 @@
+.ai-overlay { background: rgba(20,22,28,.26); border-radius: 12px; padding: 6px 10px; }
+.ai-overlay-error { background: rgba(180,32,32,.28); }
+.ai-dot { width:12px; height:12px; border-radius:9999px; background: rgba(128,128,128,.9); margin-right:8px; }
+.ai-dot.listening { background:#6ea8ff; }
+.ai-dot.thinking  { background:#a78bfa; }
+.ai-dot.error     { background:#ff6b6b; }
+.ai-label { color:#fff; font-weight:600; font-size:11pt; }

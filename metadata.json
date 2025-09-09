@@ -1,0 +1,8 @@
+{
+  "uuid": "ai-overlay@example.com",
+  "name": "AI Overlay",
+  "description": "Overlay with states: idle, listening, thinking, error",
+  "version": 7,
+  "shell-version": ["46"],
+  "stylesheet": "stylesheet.css"
+}

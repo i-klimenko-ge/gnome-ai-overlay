@@ -1,0 +1,225 @@
+'use strict';
+
+import St from 'gi://St';
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import Clutter from 'gi://Clutter';
+import Meta from 'gi://Meta'; // на будущее
+import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+
+const BUS_NAME = 'org.example.AIOverlay';
+const OBJ_PATH = '/org/example/AIOverlay';
+const IFACE = 'org.example.AIOverlay';
+const IFACE_XML = `
+<node>
+  <interface name="${IFACE}">
+    <method name="SetState"><arg type="s" name="state" direction="in"/></method>
+    <method name="GetState"><arg type="s" name="state" direction="out"/></method>
+    <method name="Show"/>
+    <method name="Hide"/>
+    <method name="Ping"><arg type="s" name="reply" direction="out"/></method>
+  </interface>
+</node>`;
+
+class Overlay {
+  constructor() {
+    this._box = null; this._dot = null; this._label = null;
+    this._pulse = 0; this._state = 'idle';
+    this._monitorMgr = null; this._monitorsChangedId = 0;
+  }
+
+  enable() {
+    log('[ai-overlay] overlay.enable');
+    this._build();
+    this._reposition();
+
+    // GNOME 46: слушаем изменения конфигурации мониторов через MonitorManager
+    this._monitorMgr = global.display.get_monitor_manager?.() ?? null;
+    if (this._monitorMgr?.connect) {
+      this._monitorsChangedId = this._monitorMgr.connect('monitors-changed', () => this._reposition());
+    } else {
+      log('[ai-overlay] monitor-manager not found; skip monitors-changed');
+    }
+
+    // мягкий «пинг», чтобы увидеть, что живо
+    this.setState('listening');
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 700, () => {
+      this.setState('idle');
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  disable() {
+    log('[ai-overlay] overlay.disable');
+    this._stopPulse();
+    if (this._monitorMgr && this._monitorsChangedId) {
+      this._monitorMgr.disconnect(this._monitorsChangedId);
+      this._monitorsChangedId = 0;
+    }
+    this._monitorMgr = null;
+    this._box?.destroy(); this._box = this._dot = this._label = null;
+  }
+
+  _build() {
+    this._box = new St.BoxLayout({ style_class: 'ai-overlay', reactive: false });
+    this._dot = new St.Widget({ style_class: 'ai-dot', width: 12, height: 12, reactive: false });
+    this._label = new St.Label({ text: '', style_class: 'ai-label', reactive: false });
+    this._box.add_child(this._dot); this._box.add_child(this._label);
+    global.stage.add_child(this._box);
+    this._box.hide();
+  }
+
+  _raise() {
+    // поднимаем поверх всех детей stage
+    if (this._box?.get_parent() === global.stage)
+      global.stage.set_child_above_sibling(this._box, null);
+  }
+
+  _reposition() {
+    const d = global.display;
+    const idx = d.get_primary_monitor();
+    const rect = d.get_monitor_geometry(idx);
+    const m = 24;
+    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      if (!this._box) return GLib.SOURCE_REMOVE;
+      this._box.set_position(rect.x + rect.width - this._box.width - m, rect.y + m);
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  _stopPulse() {
+    if (this._pulse) { GLib.source_remove(this._pulse); this._pulse = 0; }
+    if (this._box) { this._box.scale_x = 1; this._box.scale_y = 1; }
+  }
+
+  _startPulse(period) {
+    this._stopPulse();
+    const half = Math.max(150, Math.floor(period/2));
+    const tick = () => {
+      if (!this._box) return GLib.SOURCE_REMOVE;
+      this._box.ease({
+        scale_x: 1.06, scale_y: 1.06, duration: half,
+        mode: Clutter.AnimationMode.EASE_IN_OUT_QUAD,
+        onComplete: () => this._box?.ease({
+          scale_x: 1, scale_y: 1, duration: half,
+          mode: Clutter.AnimationMode.EASE_IN_OUT_QUAD
+        })
+      });
+      return GLib.SOURCE_CONTINUE;
+    };
+    this._pulse = GLib.timeout_add(GLib.PRIORITY_DEFAULT, period, tick);
+    tick();
+  }
+
+  _apply() {
+    if (!this._box) return;
+    this._dot.remove_style_class_name('listening');
+    this._dot.remove_style_class_name('thinking');
+    this._dot.remove_style_class_name('error');
+    this._box.remove_style_class_name('ai-overlay-error');
+
+    switch (this._state) {
+      case 'idle':
+        this._label.text = ''; this._stopPulse(); this.hide(); break;
+      case 'listening':
+        this._label.text = 'Слушаю…'; this._dot.add_style_class_name('listening'); this._startPulse(700); this.show(); break;
+      case 'thinking':
+        this._label.text = 'Думаю…'; this._dot.add_style_class_name('thinking'); this._startPulse(1100); this.show(); break;
+      case 'error':
+        this._label.text = 'Ошибка'; this._dot.add_style_class_name('error'); this._box.add_style_class_name('ai-overlay-error');
+        this._stopPulse(); this.show(); this._box.opacity = 180;
+        this._box.ease({ opacity: 255, duration: 220, mode: Clutter.AnimationMode.EASE_OUT_QUAD }); break;
+    }
+    this._reposition();
+    this._raise();
+  }
+
+  setState(s) {
+    s = String(s).toLowerCase();
+    if (!['idle','listening','thinking','error'].includes(s)) { log(`[ai-overlay] unknown state ${s}`); return; }
+    this._state = s; this._apply();
+  }
+  getState() { return this._state; }
+
+  show() {
+    if (!this._box) return;
+    this._box.opacity = 0; this._box.show();
+    this._raise();
+    this._box.ease({ opacity: 255, duration: 150, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+  }
+  hide() {
+    if (!this._box) return;
+    this._box.ease({
+      opacity: 0, duration: 120, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+      onComplete: () => this._box && this._box.hide()
+    });
+  }
+}
+
+class DBusController {
+  constructor(overlay) { this._overlay = overlay; this._nameId = 0; this._exported = null; this._conn = null; this._regId = 0; }
+
+  enable() {
+    log('[ai-overlay] dbus.enable');
+    try {
+      if (Gio.DBusExportedObject?.wrapJSObject) {
+        const impl = {
+          SetState: (state) => { this._overlay.setState(state); },         // ничего не возвращаем
+          GetState: () => this._overlay.getState(),                         // вернуть СТРОКУ, не массив
+          Show: () => { this._overlay.show(); },                            // ничего не возвращаем
+          Hide: () => { this._overlay.hide(); },                            // ничего не возвращаем
+          Ping: () => 'ok',                                                 // вернуть СТРОКУ, не массив
+        };
+        this._exported = Gio.DBusExportedObject.wrapJSObject(IFACE_XML, impl);
+        this._exported.export(Gio.DBus.session, OBJ_PATH);
+        this._nameId = Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.REPLACE, null, null, null);
+        log(`[ai-overlay] D-Bus exported as ${BUS_NAME}`);
+        return;
+      }
+      // Fallback (редко нужен)
+      const node = Gio.DBusNodeInfo.new_for_xml(IFACE_XML);
+      const iface = node.lookup_interface(IFACE);
+      const vtable = {
+        method_call: (conn, sender, path, ifaceName, method, params, inv) => {
+          try {
+            switch (method) {
+              case 'SetState': this._overlay.setState(params.deepUnpack()[0]); inv.return_value(null); break;
+              case 'GetState': inv.return_value(GLib.Variant.new_tuple(GLib.Variant.new_string(this._overlay.getState()))); break;
+              case 'Show': this._overlay.show(); inv.return_value(null); break;
+              case 'Hide': this._overlay.hide(); inv.return_value(null); break;
+              case 'Ping': inv.return_value(GLib.Variant.new_tuple(GLib.Variant.new_string('ok'))); break;
+              default: inv.return_dbus_error('org.freedesktop.DBus.Error.UnknownMethod','Unknown'); break;
+            }
+          } catch (e) { logError(e, '[ai-overlay] dbus method'); inv.return_dbus_error('org.example.AIOverlay.Error', String(e)); }
+        }
+      };
+      this._nameId = Gio.DBus.own_name(
+        Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.REPLACE,
+        conn => { this._conn = conn; this._regId = conn.register_object(OBJ_PATH, iface, vtable); log(`[ai-overlay] D-Bus exported (fallback) as ${BUS_NAME}`); },
+        null, (conn, name) => log(`[ai-overlay] name lost: ${name}`)
+      );
+    } catch (e) { logError(e, '[ai-overlay] dbus.enable error'); }
+  }
+
+  disable() {
+    log('[ai-overlay] dbus.disable');
+    try {
+      if (this._exported) { this._exported.unexport(); this._exported = null; }
+      if (this._conn && this._regId) { this._conn.unregister_object(this._regId); this._regId = 0; }
+      if (this._nameId) { Gio.bus_unown_name?.(this._nameId); Gio.DBus.unown_name?.(this._nameId); this._nameId = 0; }
+    } catch (e) { logError(e, '[ai-overlay] dbus.disable error'); }
+  }
+}
+
+export default class AiOverlayExtension extends Extension {
+  enable() {
+    log('[ai-overlay] extension.enable');
+    this._overlay = new Overlay(); this._overlay.enable();
+    this._dbus = new DBusController(this._overlay); this._dbus.enable();
+  }
+  disable() {
+    log('[ai-overlay] extension.disable');
+    this._dbus?.disable(); this._dbus = null;
+    this._overlay?.disable(); this._overlay = null;
+  }
+}
