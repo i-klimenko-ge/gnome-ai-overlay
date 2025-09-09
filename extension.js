@@ -6,6 +6,7 @@ import GLib from 'gi://GLib';
 import Clutter from 'gi://Clutter';
 import Meta from 'gi://Meta'; // на будущее
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as ByteArray from 'resource:///org/gnome/gjs/modules/byteArray.js';
 
 const BUS_NAME = 'org.example.AIOverlay';
 const OBJ_PATH = '/org/example/AIOverlay';
@@ -21,8 +22,36 @@ const IFACE_XML = `
   </interface>
 </node>`;
 
+const DEFAULT_CONFIG = {
+  dotSize: 12,
+  padding: [6, 10],
+  margin: 24,
+  position: 'top-right',
+  font: '600 11pt sans-serif',
+  pulseScale: 1.06,
+  listeningPeriod: 700,
+  thinkingPeriod: 1100,
+};
+
+function loadConfig(dir) {
+  try {
+    const file = dir.get_child('config.json');
+    if (file?.query_exists(null)) {
+      const [ok, bytes] = file.load_contents(null);
+      if (ok) {
+        const cfg = JSON.parse(ByteArray.toString(bytes));
+        return { ...DEFAULT_CONFIG, ...cfg };
+      }
+    }
+  } catch (e) {
+    logError(e, '[ai-overlay] loadConfig');
+  }
+  return { ...DEFAULT_CONFIG };
+}
+
 class Overlay {
-  constructor() {
+  constructor(cfg) {
+    this._cfg = cfg;
     this._box = null; this._dot = null; this._label = null;
     this._pulse = 0; this._state = 'idle';
     this._monitorMgr = null; this._monitorsChangedId = 0;
@@ -61,9 +90,17 @@ class Overlay {
   }
 
   _build() {
+    const pad = Array.isArray(this._cfg.padding) ? `${this._cfg.padding[0]}px ${this._cfg.padding[1]}px` : `${this._cfg.padding}px`;
     this._box = new St.BoxLayout({ style_class: 'ai-overlay', reactive: false });
-    this._dot = new St.Widget({ style_class: 'ai-dot', width: 12, height: 12, reactive: false });
+    this._box.set_style(`padding:${pad};`);
+
+    const size = this._cfg.dotSize;
+    this._dot = new St.Widget({ style_class: 'ai-dot', reactive: false });
+    this._dot.set_style(`width:${size}px;height:${size}px;`);
+
     this._label = new St.Label({ text: '', style_class: 'ai-label', reactive: false });
+    this._label.set_style(`font:${this._cfg.font};`);
+
     this._box.add_child(this._dot); this._box.add_child(this._label);
     global.stage.add_child(this._box);
     this._box.hide();
@@ -79,10 +116,20 @@ class Overlay {
     const d = global.display;
     const idx = d.get_primary_monitor();
     const rect = d.get_monitor_geometry(idx);
-    const m = 24;
+    let mx, my;
+    if (Array.isArray(this._cfg.margin)) [mx, my] = this._cfg.margin; else mx = my = this._cfg.margin;
     GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
       if (!this._box) return GLib.SOURCE_REMOVE;
-      this._box.set_position(rect.x + rect.width - this._box.width - m, rect.y + m);
+      switch (this._cfg.position) {
+        case 'top-left':
+          this._box.set_position(rect.x + mx, rect.y + my); break;
+        case 'bottom-left':
+          this._box.set_position(rect.x + mx, rect.y + rect.height - this._box.height - my); break;
+        case 'bottom-right':
+          this._box.set_position(rect.x + rect.width - this._box.width - mx, rect.y + rect.height - this._box.height - my); break;
+        default:
+          this._box.set_position(rect.x + rect.width - this._box.width - mx, rect.y + my); break;
+      }
       return GLib.SOURCE_REMOVE;
     });
   }
@@ -98,7 +145,7 @@ class Overlay {
     const tick = () => {
       if (!this._box) return GLib.SOURCE_REMOVE;
       this._box.ease({
-        scale_x: 1.06, scale_y: 1.06, duration: half,
+        scale_x: this._cfg.pulseScale, scale_y: this._cfg.pulseScale, duration: half,
         mode: Clutter.AnimationMode.EASE_IN_OUT_QUAD,
         onComplete: () => this._box?.ease({
           scale_x: 1, scale_y: 1, duration: half,
@@ -122,9 +169,9 @@ class Overlay {
       case 'idle':
         this._label.text = ''; this._stopPulse(); this.hide(); break;
       case 'listening':
-        this._label.text = 'Слушаю…'; this._dot.add_style_class_name('listening'); this._startPulse(700); this.show(); break;
+        this._label.text = 'Слушаю…'; this._dot.add_style_class_name('listening'); this._startPulse(this._cfg.listeningPeriod); this.show(); break;
       case 'thinking':
-        this._label.text = 'Думаю…'; this._dot.add_style_class_name('thinking'); this._startPulse(1100); this.show(); break;
+        this._label.text = 'Думаю…'; this._dot.add_style_class_name('thinking'); this._startPulse(this._cfg.thinkingPeriod); this.show(); break;
       case 'error':
         this._label.text = 'Ошибка'; this._dot.add_style_class_name('error'); this._box.add_style_class_name('ai-overlay-error');
         this._stopPulse(); this.show(); this._box.opacity = 180;
@@ -214,7 +261,8 @@ class DBusController {
 export default class AiOverlayExtension extends Extension {
   enable() {
     log('[ai-overlay] extension.enable');
-    this._overlay = new Overlay(); this._overlay.enable();
+    this._config = loadConfig(this.dir);
+    this._overlay = new Overlay(this._config); this._overlay.enable();
     this._dbus = new DBusController(this._overlay); this._dbus.enable();
   }
   disable() {
