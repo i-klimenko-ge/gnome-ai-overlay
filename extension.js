@@ -209,43 +209,51 @@ class DBusController {
   enable() {
     log('[ai-overlay] dbus.enable');
     try {
-      if (Gio.DBusExportedObject?.wrapJSObject) {
-        const impl = {
-          SetState: (state) => { this._overlay.setState(state); },         // ничего не возвращаем
-          GetState: () => this._overlay.getState(),                         // вернуть СТРОКУ, не массив
-          Show: () => { this._overlay.show(); },                            // ничего не возвращаем
-          Hide: () => { this._overlay.hide(); },                            // ничего не возвращаем
-          Ping: () => 'ok',                                                 // вернуть СТРОКУ, не массив
-        };
-        this._exported = Gio.DBusExportedObject.wrapJSObject(IFACE_XML, impl);
-        this._exported.export(Gio.DBus.session, OBJ_PATH);
-        this._nameId = Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.REPLACE, null, null, null);
-        log(`[ai-overlay] D-Bus exported as ${BUS_NAME}`);
-        return;
-      }
-      // Fallback (редко нужен)
-      const node = Gio.DBusNodeInfo.new_for_xml(IFACE_XML);
-      const iface = node.lookup_interface(IFACE);
-      const vtable = {
-        method_call: (conn, sender, path, ifaceName, method, params, inv) => {
-          try {
-            switch (method) {
-              case 'SetState': this._overlay.setState(params.deepUnpack()[0]); inv.return_value(null); break;
-              case 'GetState': inv.return_value(GLib.Variant.new_tuple(GLib.Variant.new_string(this._overlay.getState()))); break;
-              case 'Show': this._overlay.show(); inv.return_value(null); break;
-              case 'Hide': this._overlay.hide(); inv.return_value(null); break;
-              case 'Ping': inv.return_value(GLib.Variant.new_tuple(GLib.Variant.new_string('ok'))); break;
-              default: inv.return_dbus_error('org.freedesktop.DBus.Error.UnknownMethod','Unknown'); break;
+      const busAcquired = (conn) => {
+        this._conn = conn;
+        if (Gio.DBusExportedObject?.wrapJSObject) {
+          const impl = {
+            SetState: (state) => { this._overlay.setState(state); },
+            GetState: () => this._overlay.getState(),
+            Show: () => { this._overlay.show(); },
+            Hide: () => { this._overlay.hide(); },
+            Ping: () => 'ok',
+          };
+          this._exported = Gio.DBusExportedObject.wrapJSObject(IFACE_XML, impl);
+          this._exported.export(conn, OBJ_PATH);
+        } else {
+          const node = Gio.DBusNodeInfo.new_for_xml(IFACE_XML);
+          const iface = node.lookup_interface(IFACE);
+          const vtable = {
+            method_call: (conn, sender, path, ifaceName, method, params, inv) => {
+              try {
+                switch (method) {
+                  case 'SetState': this._overlay.setState(params.deepUnpack()[0]); inv.return_value(null); break;
+                  case 'GetState': inv.return_value(GLib.Variant.new_tuple(GLib.Variant.new_string(this._overlay.getState()))); break;
+                  case 'Show': this._overlay.show(); inv.return_value(null); break;
+                  case 'Hide': this._overlay.hide(); inv.return_value(null); break;
+                  case 'Ping': inv.return_value(GLib.Variant.new_tuple(GLib.Variant.new_string('ok'))); break;
+                  default: inv.return_dbus_error('org.freedesktop.DBus.Error.UnknownMethod','Unknown'); break;
+                }
+              } catch (e) { logError(e, '[ai-overlay] dbus method'); inv.return_dbus_error('org.example.AIOverlay.Error', String(e)); }
             }
-          } catch (e) { logError(e, '[ai-overlay] dbus method'); inv.return_dbus_error('org.example.AIOverlay.Error', String(e)); }
+          };
+          this._regId = conn.register_object(OBJ_PATH, iface, vtable);
         }
+        log(`[ai-overlay] D-Bus exported as ${BUS_NAME}`);
       };
+
       this._nameId = Gio.DBus.own_name(
-        Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.REPLACE,
-        conn => { this._conn = conn; this._regId = conn.register_object(OBJ_PATH, iface, vtable); log(`[ai-overlay] D-Bus exported (fallback) as ${BUS_NAME}`); },
-        null, (conn, name) => log(`[ai-overlay] name lost: ${name}`)
+        Gio.BusType.SESSION,
+        BUS_NAME,
+        Gio.BusNameOwnerFlags.REPLACE,
+        busAcquired,
+        null,
+        (conn, name) => log(`[ai-overlay] name lost: ${name}`)
       );
-    } catch (e) { logError(e, '[ai-overlay] dbus.enable error'); }
+    } catch (e) {
+      logError(e, '[ai-overlay] dbus.enable error');
+    }
   }
 
   disable() {
@@ -253,7 +261,8 @@ class DBusController {
     try {
       if (this._exported) { this._exported.unexport(); this._exported = null; }
       if (this._conn && this._regId) { this._conn.unregister_object(this._regId); this._regId = 0; }
-      if (this._nameId) { Gio.bus_unown_name?.(this._nameId); Gio.DBus.unown_name?.(this._nameId); this._nameId = 0; }
+      if (this._nameId) { Gio.DBus.unown_name(this._nameId); this._nameId = 0; }
+      this._conn = null;
     } catch (e) { logError(e, '[ai-overlay] dbus.disable error'); }
   }
 }
