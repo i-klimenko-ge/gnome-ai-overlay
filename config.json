@@ -1,0 +1,27 @@
+{
+  "corner": "top-right",
+  "offset": { "x": 24, "y": 24 },
+  "monitor": "primary",
+  "showLabel": true,
+  "dotSize": 12,
+  "fontSize": 11,
+  "padding": [6, 10],
+  "radius": 12,
+  "opacity": 0.26,
+  "pivot": { "x": 0.5, "y": 0.5 },
+  "pulse": {
+    "enabled": true,
+    "scale": 1.06,
+    "periodListening": 700,
+    "periodThinking": 1100
+  },
+  "colors": {
+    "bg": "rgba(20,22,28,0.26)",
+    "bgError": "rgba(180,32,32,0.28)",
+    "text": "#ffffff",
+    "dotListening": "#6ea8ff",
+    "dotThinking": "#a78bfa",
+    "dotError": "#ff6b6b",
+    "dotIdle": "rgba(128,128,128,0.9)"
+  }
+}
